@@ -1,8 +1,20 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+function getAi() {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is missing. Please set it in your environment variables.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey });
+  }
+  return aiInstance;
+}
 
 export async function ocrWrongQuestion(imageBase64: string, mimeType: string) {
+  const ai = getAi();
   const model = "gemini-3-flash-preview";
 
   const systemInstruction = `
@@ -56,6 +68,7 @@ export async function ocrWrongQuestion(imageBase64: string, mimeType: string) {
 }
 
 export async function generateSimilarQuestions(knowledgePoint: string, originalQuestion: any) {
+  const ai = getAi();
   const model = "gemini-3-flash-preview";
 
   const systemInstruction = `

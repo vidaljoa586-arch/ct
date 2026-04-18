@@ -178,22 +178,13 @@ export default function App() {
             <div style="font-size: 12px; color: #666;">生成时间: ${new Date(record.createdAt).toLocaleString()}</div>
           </div>
           <div style="margin-bottom: 30px;">
-            <h3 style="font-size: 16px; margin-bottom: 10px; color: #111;">【原题回顾】</h3>
-            <div style="font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${record.originalQuestion.content}</div>
-          </div>
-          <div style="margin-bottom: 30px;">
             <h3 style="font-size: 16px; margin-bottom: 15px; color: #111;">【举一反三】</h3>
             ${record.similarQuestions.map((q, idx) => `
-              <div style="margin-bottom: 25px; padding-left: 10px; border-left: 3px solid #eee;">
-                <div style="font-weight: bold; margin-bottom: 5px;">题目 ${idx + 1}：</div>
-                <div style="font-size: 14px; line-height: 1.6; white-space: pre-wrap; margin-bottom: 10px;">${q.content}</div>
-                <div style="background: #f9f9f9; padding: 10px; border-radius: 4px; margin-top: 10px;">
-                  <div style="font-weight: bold; font-size: 13px; margin-bottom: 4px;">[答案与解析]</div>
-                  <div style="font-size: 13px; line-height: 1.5;">${q.answer}</div>
-                  <div style="font-size: 12px; color: #444; margin-top: 5px; border-top: 1px dashed #ccc; pt-4;">
-                    <span style="color: #d97706; font-weight: bold;">易错分析：</span>${q.analysis}
-                  </div>
-                </div>
+              <div style="margin-bottom: 60px; padding-left: 10px; border-left: 3px solid #eee;">
+                <div style="font-weight: bold; margin-bottom: 10px;">题目 ${idx + 1}：</div>
+                <div style="font-size: 14px; line-height: 1.6; white-space: pre-wrap; margin-bottom: 40px;">${q.content}</div>
+                <div style="font-size: 12px; color: #999; margin-bottom: 120px;">答题区：</div>
+                <div style="border-bottom: 1px dashed #eee; height: 1px;"></div>
               </div>
             `).join('')}
           </div>
@@ -728,33 +719,19 @@ function PrintPreviewModal({ isOpen, onClose, records, onConfirm, isGenerating }
                   <span className="text-xs text-gray-400"># {index + 1}</span>
                 </div>
                 
-                <div className="mb-8">
-                  <h4 className="text-sm font-bold text-gray-900 mb-3 ml-2 border-l-4 border-indigo-500 pl-3">【原题回顾】</h4>
-                  <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed markdown-content">
-                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                      {record.originalQuestion.content}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-
                 <div>
                   <h4 className="text-sm font-bold text-gray-900 mb-4 ml-2 border-l-4 border-indigo-500 pl-3">【举一反三】</h4>
-                  <div className="space-y-6">
+                  <div className="space-y-12">
                     {record.similarQuestions.map((q, idx) => (
-                      <div key={idx} className="pl-4 border-l-2 border-gray-100">
-                        <p className="text-xs font-bold text-indigo-600 mb-2">变式 {idx + 1}</p>
-                        <div className="text-sm leading-relaxed mb-4 markdown-content">
+                      <div key={idx} className="pl-4 border-l-2 border-gray-100 mb-20 last:mb-0">
+                        <p className="text-xs font-bold text-indigo-600 mb-3">变式 {idx + 1}</p>
+                        <div className="text-sm leading-relaxed mb-6 markdown-content">
                           <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
                             {q.content}
                           </ReactMarkdown>
                         </div>
-                        <div className="mt-3 p-4 bg-indigo-50/30 rounded-xl border border-indigo-100/50">
-                          <p className="text-xs font-bold text-gray-500 mb-2">解析：</p>
-                          <div className="text-xs text-gray-700 leading-normal markdown-content">
-                            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                              {q.analysis}
-                            </ReactMarkdown>
-                          </div>
+                        <div className="h-48 border border-dashed border-gray-100 rounded-xl flex items-center justify-center text-gray-300 text-xs">
+                          答题留白区域
                         </div>
                       </div>
                     ))}
