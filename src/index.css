@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 
 @layer base {
   .markdown-content p {
@@ -16,5 +17,17 @@
     list-style-type: decimal;
     margin-left: 1.5rem;
     margin-bottom: 0.5rem;
+  }
+  .markdown-content strong {
+    color: #be123c; /* Rose-700 for highlighting common mistakes */
+    font-weight: 700;
+  }
+  .markdown-content code {
+    background-color: #f1f5f9;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: ui-monospace, monospace;
+    color: #475569;
   }
 }

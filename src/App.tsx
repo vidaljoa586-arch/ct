@@ -14,17 +14,20 @@ import {
   Loader2,
   Download,
   X,
-  Search
+  Search,
+  ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDropzone } from 'react-dropzone';
 import { cn } from './lib/utils';
-import { processWrongQuestion, regenerateSimilarQuestions } from './services/geminiService';
+import { ocrWrongQuestion, generateSimilarQuestions } from './services/geminiService';
 import { WrongQuestionRecord, Question } from './types';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'identify' | 'notebook'>('identify');
@@ -34,6 +37,10 @@ export default function App() {
   const [selectedRecords, setSelectedRecords] = useState<string[]>([]);
   const [isGeneratingSimilar, setIsGeneratingSimilar] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [similarAnalysisVisibility, setSimilarAnalysisVisibility] = useState<Record<number, boolean>>({});
+  const [showSimilarView, setShowSimilarView] = useState(false);
+  const [originalAnalysisVisible, setOriginalAnalysisVisible] = useState(false);
 
   // Load records from local storage
   useEffect(() => {
@@ -54,22 +61,40 @@ export default function App() {
 
   const handleFileUpload = async (file: File) => {
     setIsProcessing(true);
+    setCurrentResult(null);
+    setSimilarAnalysisVisibility({});
+    setShowSimilarView(false);
+    setOriginalAnalysisVisible(false);
     try {
       const base64 = await fileToBase64(file);
-      const data = await processWrongQuestion(base64.split(',')[1], file.type);
+      const data = await ocrWrongQuestion(base64.split(',')[1], file.type);
       setCurrentResult({
         id: crypto.randomUUID(),
         originalImage: base64,
         originalQuestion: data.originalQuestion,
         knowledgePoint: data.knowledgePoint,
-        similarQuestions: data.similarQuestions,
+        similarQuestions: [],
         createdAt: Date.now()
       });
     } catch (error) {
-      console.error('Processing error:', error);
+      console.error('OCR error:', error);
       alert('识别失败，请重试');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const handleGenerateInference = async () => {
+    if (!currentResult?.knowledgePoint || !currentResult?.originalQuestion || isGeneratingSimilar) return;
+    setIsGeneratingSimilar(true);
+    try {
+      const data = await generateSimilarQuestions(currentResult.knowledgePoint, currentResult.originalQuestion);
+      setCurrentResult({ ...currentResult, similarQuestions: data.similarQuestions });
+      setShowSimilarView(true);
+    } catch (error) {
+      alert('生成举一反三失败');
+    } finally {
+      setIsGeneratingSimilar(false);
     }
   };
 
@@ -95,24 +120,14 @@ export default function App() {
   });
 
   const saveCurrentRecord = () => {
-    if (currentResult && currentResult.originalQuestion && currentResult.knowledgePoint && currentResult.similarQuestions) {
-      const newRecord = currentResult as WrongQuestionRecord;
+    if (currentResult && currentResult.originalQuestion && currentResult.knowledgePoint) {
+      const newRecord = {
+        ...currentResult,
+        similarQuestions: currentResult.similarQuestions || []
+      } as WrongQuestionRecord;
       setRecords([newRecord, ...records]);
       setCurrentResult(null);
       setActiveTab('notebook');
-    }
-  };
-
-  const handleRegenerate = async () => {
-    if (!currentResult?.knowledgePoint || !currentResult?.originalQuestion || isGeneratingSimilar) return;
-    setIsGeneratingSimilar(true);
-    try {
-      const data = await regenerateSimilarQuestions(currentResult.knowledgePoint, currentResult.originalQuestion);
-      setCurrentResult({ ...currentResult, similarQuestions: data.similarQuestions });
-    } catch (error) {
-      alert('重新生成失败');
-    } finally {
-      setIsGeneratingSimilar(false);
     }
   };
 
@@ -129,8 +144,12 @@ export default function App() {
     }
   };
 
-  const generatePDF = async () => {
-    if (selectedRecords.length === 0) return alert('请先选择要打印的题目');
+  const generatePDF = async (itemsOverride?: WrongQuestionRecord[]) => {
+    const itemsToPrint = itemsOverride || records
+      .filter(r => selectedRecords.includes(r.id))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    if (itemsToPrint.length === 0) return alert('请先选择要打印的题目');
     
     // Show a global loader for PDF generation
     setIsProcessing(true);
@@ -147,10 +166,6 @@ export default function App() {
       container.style.color = 'black';
       container.className = 'pdf-container';
       document.body.appendChild(container);
-
-      const itemsToPrint = records
-        .filter(r => selectedRecords.includes(r.id))
-        .sort((a, b) => b.createdAt - a.createdAt);
 
       for (let i = 0; i < itemsToPrint.length; i++) {
         const record = itemsToPrint[i];
@@ -247,14 +262,35 @@ export default function App() {
         
         {activeTab === 'notebook' && records.length > 0 && (
           <button 
-            onClick={generatePDF}
+            onClick={() => setShowPrintPreview(true)}
             className={cn(
               "flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-full text-sm font-medium transition-all hover:bg-indigo-700 active:scale-95 shadow-lg shadow-indigo-200",
               selectedRecords.length === 0 && "opacity-50 cursor-not-allowed bg-gray-400"
             )}
           >
             <Printer size={16} />
-            <span>打印已选 ({selectedRecords.length})</span>
+            <span>预览打印 ({selectedRecords.length})</span>
+          </button>
+        )}
+
+        {activeTab === 'identify' && currentResult && (
+          <button 
+            onClick={() => {
+              // Create a temporary selection for just this record
+              const tempRecord = currentResult as WrongQuestionRecord;
+              if (tempRecord.similarQuestions?.length === 0) {
+                return alert('请先生成举一反三题目后再打印');
+              }
+              // We'll use the record ID to select it temporarily
+              // But handlePDF actually looks at the records state.
+              // So we might need a separate way to print the current result if it's not saved yet.
+              // For simplicity, let's just use the existing preview modal logic but with this one item.
+              setShowPrintPreview(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-full text-sm font-medium transition-all hover:bg-indigo-700 active:scale-95 shadow-lg shadow-indigo-200"
+          >
+            <Printer size={16} />
+            <span>直接打印当前</span>
           </button>
         )}
       </header>
@@ -310,119 +346,212 @@ export default function App() {
                   </div>
 
                   {/* Identification Result Panels */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Original Image & Basic Info */}
-                    <div className="md:col-span-1 space-y-4">
-                      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-                        <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">原图参考</h3>
-                        {currentResult.originalImage && (
-                          <img 
-                            src={currentResult.originalImage} 
-                            alt="Original" 
-                            className="w-full rounded-lg object-contain bg-gray-50 h-48 border border-gray-100"
-                          />
-                        )}
-                        <div className="mt-4">
-                          <label className="text-xs font-bold text-gray-400 block mb-1">知识点</label>
-                          <input 
-                            type="text" 
-                            value={currentResult.knowledgePoint}
-                            onChange={(e) => setCurrentResult({...currentResult, knowledgePoint: e.target.value})}
-                            className="w-full px-3 py-2 bg-indigo-50 text-indigo-700 font-semibold rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                          />
-                        </div>
-                      </div>
-                      
-                      <button 
-                        onClick={saveCurrentRecord}
-                        className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-colors shadow-lg active:scale-95"
-                      >
-                        <CheckCircle2 size={24} />
-                        保存到错题本
-                      </button>
-                    </div>
-
-                    {/* Question Editing Area */}
-                    <div className="md:col-span-2 space-y-6">
-                      <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="text-lg font-bold">原题详情</h3>
-                          <span className="text-xs bg-gray-100 px-2 py-1 rounded text-gray-500">可手动修正</span>
-                        </div>
-                        <div className="space-y-4">
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1">题目文本</label>
-                            <textarea 
-                              className="w-full h-32 p-4 bg-gray-50 rounded-xl resize-none text-sm leading-relaxed focus:bg-white focus:ring-2 focus:ring-indigo-500/10 outline-none border border-transparent focus:border-indigo-200 transition-all"
-                              value={currentResult.originalQuestion?.content}
-                              onChange={(e) => setCurrentResult({
-                                ...currentResult, 
-                                originalQuestion: { ...currentResult.originalQuestion!, content: e.target.value } 
-                              })}
+                  {!showSimilarView ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {/* Original Image & Basic Info */}
+                      <div className="md:col-span-1 space-y-4">
+                        <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                          <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">原图参考</h3>
+                          {currentResult.originalImage && (
+                            <img 
+                              src={currentResult.originalImage} 
+                              alt="Original" 
+                              className="w-full rounded-lg object-contain bg-gray-50 h-48 border border-gray-100"
+                            />
+                          )}
+                          <div className="mt-4">
+                            <label className="text-xs font-bold text-gray-400 block mb-1">知识点</label>
+                            <input 
+                              type="text" 
+                              value={currentResult.knowledgePoint}
+                              onChange={(e) => setCurrentResult({...currentResult, knowledgePoint: e.target.value})}
+                              className="w-full px-3 py-2 bg-indigo-50 text-indigo-700 font-semibold rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                             />
                           </div>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1">答案</label>
-                              <input 
-                                className="w-full p-3 bg-gray-50 rounded-xl text-sm outline-none"
-                                value={currentResult.originalQuestion?.answer || ''}
-                                onChange={(e) => setCurrentResult({
-                                  ...currentResult, 
-                                  originalQuestion: { ...currentResult.originalQuestion!, answer: e.target.value } 
-                                })}
-                              />
-                            </div>
-                            <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1">解析</label>
-                              <input 
-                                className="w-full p-3 bg-gray-50 rounded-xl text-sm outline-none"
-                                value={currentResult.originalQuestion?.analysis || ''}
-                                onChange={(e) => setCurrentResult({
-                                  ...currentResult, 
-                                  originalQuestion: { ...currentResult.originalQuestion!, analysis: e.target.value } 
-                                })}
-                              />
-                            </div>
-                          </div>
                         </div>
-                      </div>
-
-                      {/* Similar Questions Preview */}
-                      <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                        <div className="flex justify-between items-center mb-6">
-                          <h3 className="text-lg font-bold flex items-center gap-2">
-                            <RefreshCcw size={18} className="text-indigo-600" />
-                            智能举一反三
-                          </h3>
+                        
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                          <Plus size={32} className="text-indigo-400 mb-2 mx-auto" />
+                          <p className="text-xs text-gray-400 text-center mb-6">确认原题无误后生成变式</p>
                           <button 
-                            onClick={handleRegenerate}
+                            onClick={handleGenerateInference}
                             disabled={isGeneratingSimilar}
-                            className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-full hover:bg-indigo-100 transition-colors disabled:opacity-50"
+                            className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-lg active:scale-95 disabled:opacity-50"
                           >
-                            {isGeneratingSimilar ? <Loader2 size={12} className="animate-spin" /> : <RefreshCcw size={12} />}
-                            重新生成
+                            {isGeneratingSimilar ? <Loader2 size={20} className="animate-spin" /> : <RefreshCcw size={20} />}
+                            生成举一反三题目
                           </button>
                         </div>
 
-                        <div className="space-y-4">
+                        <button 
+                          onClick={saveCurrentRecord}
+                          className="w-full py-4 bg-white text-indigo-600 border-2 border-indigo-100 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors active:scale-95"
+                        >
+                          <CheckCircle2 size={24} />
+                          仅保存原题
+                        </button>
+                      </div>
+
+                      {/* Question Editing Area */}
+                      <div className="md:col-span-2 space-y-6">
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                          <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold">原题修改</h3>
+                            <span className="text-xs bg-gray-100 px-2 py-1 rounded text-gray-500">纠正识别错误</span>
+                          </div>
+                          <div className="space-y-4">
+                            <div>
+                              <label className="text-xs font-bold text-gray-400 block mb-1">题目文本</label>
+                              <textarea 
+                                className="w-full h-32 p-4 bg-gray-50 rounded-xl resize-none text-sm leading-relaxed focus:bg-white focus:ring-2 focus:ring-indigo-500/10 outline-none border border-transparent focus:border-indigo-200 transition-all"
+                                value={currentResult.originalQuestion?.content}
+                                onChange={(e) => setCurrentResult({
+                                  ...currentResult, 
+                                  originalQuestion: { ...currentResult.originalQuestion!, content: e.target.value } 
+                                })}
+                              />
+                            </div>
+                            <div className="grid grid-cols-1 gap-4">
+                              <div>
+                                <label className="text-xs font-bold text-gray-400 block mb-1">答案</label>
+                                <input 
+                                  className="w-full p-3 bg-gray-50 rounded-xl text-sm outline-none"
+                                  value={currentResult.originalQuestion?.answer || ''}
+                                  onChange={(e) => setCurrentResult({
+                                    ...currentResult, 
+                                    originalQuestion: { ...currentResult.originalQuestion!, answer: e.target.value } 
+                                  })}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs font-bold text-gray-400 block mb-1">解析 / 易错分析</label>
+                                <textarea 
+                                  className="w-full h-24 p-3 bg-gray-50 rounded-xl text-sm outline-none resize-none"
+                                  value={currentResult.originalQuestion?.analysis || ''}
+                                  onChange={(e) => setCurrentResult({
+                                    ...currentResult, 
+                                    originalQuestion: { ...currentResult.originalQuestion!, analysis: e.target.value } 
+                                  })}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Analysis Toggle Preview for Original */}
+                            <div className="pt-4 border-t border-dashed border-gray-100">
+                              <button 
+                                onClick={() => setOriginalAnalysisVisible(!originalAnalysisVisible)}
+                                className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors"
+                              >
+                                {originalAnalysisVisible ? <X size={12} /> : <BookOpen size={12} />}
+                                {originalAnalysisVisible ? "收起答案解析" : "查看识别解析"}
+                              </button>
+
+                              {originalAnalysisVisible && (
+                                <motion.div 
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  className="mt-3 p-4 bg-indigo-50 rounded-2xl border border-indigo-100 shadow-sm space-y-3"
+                                >
+                                  <div className="text-sm">
+                                    <span className="font-bold text-indigo-600 mr-2">答案:</span>
+                                    <span className="font-medium">{currentResult.originalQuestion?.answer}</span>
+                                  </div>
+                                  <div className="text-sm leading-relaxed markdown-content pt-2 border-t border-dashed border-indigo-200">
+                                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                      {currentResult.originalQuestion?.analysis || ''}
+                                    </ReactMarkdown>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Similar Questions View - Separate Interface */
+                    <div className="space-y-6">
+                      <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 overflow-hidden relative">
+                        <div className="absolute top-0 right-0 p-4">
+                           <button 
+                             onClick={() => setShowSimilarView(false)}
+                             className="text-xs font-bold text-gray-400 hover:text-indigo-600 transition-colors flex items-center gap-1"
+                           >
+                              <ArrowLeft size={14} /> 返回修改
+                           </button>
+                        </div>
+
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                          <div>
+                            <h3 className="text-xl font-bold flex items-center gap-2">
+                              <RefreshCcw size={20} className="text-indigo-600" />
+                              举一反三变式题
+                            </h3>
+                            <p className="text-xs text-gray-400 mt-1">基于知识点：<span className="text-indigo-600 font-bold">{currentResult.knowledgePoint}</span> 生成的相似题目</p>
+                          </div>
+                          
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={handleGenerateInference}
+                              disabled={isGeneratingSimilar}
+                              className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 px-4 py-2 rounded-xl hover:bg-indigo-100 transition-colors disabled:opacity-50"
+                            >
+                              {isGeneratingSimilar ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                              重新生成
+                            </button>
+                            <button 
+                              onClick={saveCurrentRecord}
+                              className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 px-6 py-2 rounded-xl hover:bg-indigo-700 transition-all shadow-md active:scale-95"
+                            >
+                              <CheckCircle2 size={16} /> 保存所有
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-6">
                           {currentResult.similarQuestions?.map((q, idx) => (
-                            <div key={idx} className="p-4 bg-gray-50 rounded-2xl group hover:bg-white hover:ring-2 hover:ring-indigo-100 transition-all border border-transparent">
-                              <div className="flex justify-between items-start mb-2">
-                                <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded uppercase">变式 {idx+1}</span>
-                                <button className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded text-gray-400 transition-all">
-                                  <ChevronRight size={14} />
-                                </button>
+                            <div key={idx} className="p-6 bg-gray-50 rounded-3xl group transition-all border border-transparent hover:border-indigo-100 hover:bg-white hover:shadow-xl">
+                              <div className="flex justify-between items-start mb-4">
+                                <span className="text-xs font-bold bg-indigo-600 text-white px-3 py-1 rounded-full uppercase tracking-tighter shadow-sm">变式题目 {idx+1}</span>
                               </div>
-                              <div className="text-sm line-clamp-3 text-gray-700 leading-relaxed markdown-content">
-                                <ReactMarkdown>{q.content}</ReactMarkdown>
+                              <div className="text-base text-gray-700 leading-relaxed markdown-content mb-6 p-2">
+                                <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                  {q.content}
+                                </ReactMarkdown>
                               </div>
+                              
+                              <button 
+                                onClick={() => setSimilarAnalysisVisibility(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                                className="flex items-center gap-1.5 text-sm font-bold text-indigo-600 hover:text-indigo-700 transition-colors py-2 px-4 bg-white border border-indigo-100 rounded-xl shadow-sm"
+                              >
+                                {similarAnalysisVisibility[idx] ? <X size={14} /> : <BookOpen size={14} />}
+                                {similarAnalysisVisibility[idx] ? "收起解析" : "查看解析与答案"}
+                              </button>
+
+                              {similarAnalysisVisibility[idx] && (
+                                <motion.div 
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  className="mt-4 p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100 shadow-inner space-y-3"
+                                >
+                                  <div className="text-sm">
+                                    <span className="font-bold text-indigo-600 mr-2">参考答案:</span>
+                                    <span className="font-semibold">{q.answer}</span>
+                                  </div>
+                                  <div className="text-sm leading-relaxed markdown-content pt-3 border-t border-dashed border-indigo-200">
+                                    <span className="font-bold text-orange-600 block mb-1">易错解析:</span>
+                                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                      {q.analysis}
+                                    </ReactMarkdown>
+                                  </div>
+                                </motion.div>
+                              )}
                             </div>
                           ))}
                         </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </motion.div>
@@ -548,6 +677,111 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      <PrintPreviewModal 
+        isOpen={showPrintPreview} 
+        onClose={() => setShowPrintPreview(false)}
+        records={
+          activeTab === 'notebook' 
+            ? records.filter(r => selectedRecords.includes(r.id))
+            : (currentResult && currentResult.id ? [currentResult as WrongQuestionRecord] : [])
+        }
+        onConfirm={(items) => generatePDF(items)}
+        isGenerating={isProcessing}
+      />
+    </div>
+  );
+}
+
+function PrintPreviewModal({ isOpen, onClose, records, onConfirm, isGenerating }: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  records: WrongQuestionRecord[],
+  onConfirm: (records: WrongQuestionRecord[]) => void,
+  isGenerating: boolean
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white w-full max-w-4xl max-h-[90vh] rounded-[32px] overflow-hidden flex flex-col shadow-2xl"
+      >
+        <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+          <div>
+            <h3 className="text-xl font-bold">打印预览</h3>
+            <p className="text-xs text-gray-400">确认排版后点击“导出 PDF”</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-8 bg-gray-50">
+          <div className="mx-auto w-[210mm] max-w-full bg-white shadow-lg p-10 min-h-[297mm] rounded-sm transform origin-top scale-[0.85] md:scale-100">
+            {records.map((record, index) => (
+              <div key={record.id} className="mb-12 last:mb-0 border-b border-gray-100 pb-8 last:border-0">
+                <div className="flex justify-between items-baseline mb-6 border-b-2 border-black pb-2">
+                  <span className="text-lg font-bold">知识点：{record.knowledgePoint}</span>
+                  <span className="text-xs text-gray-400"># {index + 1}</span>
+                </div>
+                
+                <div className="mb-8">
+                  <h4 className="text-sm font-bold text-gray-900 mb-3 ml-2 border-l-4 border-indigo-500 pl-3">【原题回顾】</h4>
+                  <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed markdown-content">
+                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                      {record.originalQuestion.content}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 mb-4 ml-2 border-l-4 border-indigo-500 pl-3">【举一反三】</h4>
+                  <div className="space-y-6">
+                    {record.similarQuestions.map((q, idx) => (
+                      <div key={idx} className="pl-4 border-l-2 border-gray-100">
+                        <p className="text-xs font-bold text-indigo-600 mb-2">变式 {idx + 1}</p>
+                        <div className="text-sm leading-relaxed mb-4 markdown-content">
+                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                            {q.content}
+                          </ReactMarkdown>
+                        </div>
+                        <div className="mt-3 p-4 bg-indigo-50/30 rounded-xl border border-indigo-100/50">
+                          <p className="text-xs font-bold text-gray-500 mb-2">解析：</p>
+                          <div className="text-xs text-gray-700 leading-normal markdown-content">
+                            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                              {q.analysis}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-6 border-t border-gray-100 flex justify-end gap-3 bg-white">
+          <button 
+            onClick={onClose}
+            className="px-6 py-2.5 rounded-xl font-bold text-sm text-gray-500 hover:bg-gray-100 transition-colors"
+          >
+            取消
+          </button>
+          <button 
+            onClick={() => onConfirm(records)}
+            disabled={isGenerating}
+            className="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-indigo-700 transition-colors shadow-lg active:scale-95 disabled:opacity-50"
+          >
+            {isGenerating ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+            确认导出 PDF
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 }
@@ -559,6 +793,7 @@ function RecordCard({ record, selected, onToggle, onDelete }: {
   onDelete: () => void
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [similarAnalysisVisibility, setSimilarAnalysisVisibility] = useState<Record<number, boolean>>({});
 
   return (
     <div className={cn(
@@ -591,7 +826,7 @@ function RecordCard({ record, selected, onToggle, onDelete }: {
           </h4>
           <p className="text-xs text-gray-400 flex items-center gap-1">
             <Plus size={10} className="text-indigo-400" />
-            包含 3 个“举一反三”变式题
+            包含 {record.similarQuestions.length} 个“举一反三”变式题
           </p>
         </div>
 
@@ -641,7 +876,9 @@ function RecordCard({ record, selected, onToggle, onDelete }: {
                   )}
                 </div>
                 <div className="text-sm text-gray-600 leading-relaxed mb-4 whitespace-pre-wrap markdown-content">
-                  <ReactMarkdown>{record.originalQuestion.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                    {record.originalQuestion.content}
+                  </ReactMarkdown>
                 </div>
                 <div className="space-y-2 border-t border-dashed border-gray-100 pt-4">
                   <div className="flex gap-2">
@@ -652,7 +889,9 @@ function RecordCard({ record, selected, onToggle, onDelete }: {
                       <div className="flex gap-2">
                         <span className="text-[10px] font-bold text-gray-400 shrink-0 mt-0.5">解析：</span>
                         <div className="text-xs text-gray-500 leading-relaxed markdown-content">
-                          <ReactMarkdown>{record.originalQuestion.analysis}</ReactMarkdown>
+                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                            {record.originalQuestion.analysis}
+                          </ReactMarkdown>
                         </div>
                       </div>
                   )}
@@ -670,25 +909,40 @@ function RecordCard({ record, selected, onToggle, onDelete }: {
                     <div key={idx} className="bg-white p-5 rounded-2xl border border-gray-200/50">
                       <div className="text-xs font-bold text-indigo-400 mb-2">题目 {idx+1}</div>
                       <p className="text-sm text-gray-700 leading-relaxed mb-4 whitespace-pre-wrap markdown-content">
-                        <ReactMarkdown>{q.content}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          {q.content}
+                        </ReactMarkdown>
                       </p>
                       
-                      <details className="group border-t border-dashed border-gray-100 pt-3">
-                        <summary className="list-none flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer uppercase tracking-widest hover:text-indigo-700 transition-colors">
-                          <Download size={10} /> 
-                          显示答案与易错点分析
-                        </summary>
-                        <div className="mt-3 p-3 bg-indigo-50/50 rounded-xl space-y-2">
-                          <div className="text-xs">
-                            <span className="font-bold text-indigo-600 mr-2">答案:</span>
-                            {q.answer}
-                          </div>
-                          <div className="text-xs leading-relaxed markdown-content">
-                            <span className="font-bold text-orange-600 mr-2">易错点:</span>
-                            <ReactMarkdown>{q.analysis}</ReactMarkdown>
-                          </div>
-                        </div>
-                      </details>
+                      <button 
+                        onClick={() => setSimilarAnalysisVisibility(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                        className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 hover:text-indigo-700 transition-colors uppercase tracking-widest border-t border-dashed border-gray-100 pt-3 w-full"
+                      >
+                        {similarAnalysisVisibility[idx] ? <X size={10} /> : <BookOpen size={10} />}
+                        {similarAnalysisVisibility[idx] ? "收起解析" : "查看解析"}
+                      </button>
+
+                      <AnimatePresence>
+                        {similarAnalysisVisibility[idx] && (
+                          <motion.div 
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="mt-3 p-3 bg-indigo-50/50 rounded-xl space-y-2 overflow-hidden"
+                          >
+                            <div className="text-xs">
+                              <span className="font-bold text-indigo-600 mr-2">答案:</span>
+                              {q.answer}
+                            </div>
+                            <div className="text-xs leading-relaxed markdown-content pt-1 border-t border-dashed border-indigo-100">
+                              <span className="font-bold text-orange-600 mr-2">易错点:</span>
+                              <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                {q.analysis}
+                              </ReactMarkdown>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
                   ))}
                 </div>
