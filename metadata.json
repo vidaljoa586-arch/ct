@@ -1,0 +1,7 @@
+{
+  "name": "错题举一反三打印机",
+  "description": "一款支持拍照识别、智能生成变式题、历史管理及一键导出PDF的错题学习工具。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
